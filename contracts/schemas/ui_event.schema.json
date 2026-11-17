@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aits.local/schemas/UIEvent.schema.json",
+  "title": "UIEvent",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "1.1"
+    },
+    "event_type": {
+      "type": "string",
+      "enum": [
+        "NODE_SELECTED",
+        "EDGE_SELECTED",
+        "EVIDENCE_OPENED",
+        "FILTER_CHANGED",
+        "TIME_RANGE_CHANGED",
+        "ASSIGNMENT_DRAFT_REQUESTED",
+        "VIEW_CHANGED",
+        "ROLE_SWITCHED_DEMO",
+        "ASSIGNMENT_ITEM_EDITED",
+        "ASSIGNMENT_REVALIDATE_REQUESTED",
+        "ASSIGNMENT_TEACHER_CONFIRMED",
+        "ASSIGNMENT_EXPORT_REQUESTED"
+      ]
+    },
+    "trace_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "snapshot_hash": {
+      "type": "string",
+      "minLength": 1
+    },
+    "payload": {
+      "type": "object"
+    },
+    "client_event_id": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "required": [
+    "schema_version",
+    "event_type",
+    "trace_id",
+    "snapshot_hash",
+    "payload",
+    "client_event_id"
+  ],
+  "additionalProperties": false
+}

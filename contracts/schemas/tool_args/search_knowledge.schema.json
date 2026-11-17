@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aits.local/schemas/search_knowledge.schema.json",
+  "title": "search_knowledge",
+  "type": "object",
+  "properties": {
+    "snapshot_hash": {
+      "type": "string",
+      "minLength": 1
+    },
+    "query_text": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "node_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "indicator_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "resource_type": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100
+    }
+  },
+  "required": [
+    "snapshot_hash",
+    "limit"
+  ],
+  "additionalProperties": false
+}

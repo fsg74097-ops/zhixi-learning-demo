@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aits.local/schemas/get_data_state.schema.json",
+  "title": "get_data_state",
+  "type": "object",
+  "properties": {
+    "snapshot_hash": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "batch_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [],
+  "additionalProperties": false
+}

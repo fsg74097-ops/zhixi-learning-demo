@@ -1,0 +1,149 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aits.local/schemas/DiagnosisResult.schema.json",
+  "title": "DiagnosisResult",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "1.1"
+    },
+    "diagnosis_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "response_ref": {
+      "type": "string",
+      "minLength": 1
+    },
+    "snapshot_hash": {
+      "type": "string",
+      "minLength": 1
+    },
+    "path": {
+      "type": "string",
+      "enum": [
+        "A_KNOWLEDGE_FIRST",
+        "B_SOLUTION_FIRST"
+      ]
+    },
+    "locked_hash": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "COMPLETED",
+        "PARTIAL",
+        "FAILED_SAFE"
+      ]
+    },
+    "observed_claims": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "claim_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "claim_type": {
+            "type": "string",
+            "enum": [
+              "OBSERVED_FACT",
+              "PATTERN",
+              "HYPOTHESIS",
+              "RECOMMENDATION"
+            ]
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1
+          },
+          "evidence_refs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "THIS_RESPONSE",
+              "THIS_ASSESSMENT",
+              "REPEATED_OBSERVATION",
+              "CLASS_AGGREGATE"
+            ]
+          },
+          "review_status": {
+            "type": "string",
+            "enum": [
+              "VERIFIED",
+              "DISPUTED",
+              "UNRESOLVED",
+              "MODEL_CANDIDATE"
+            ]
+          }
+        },
+        "required": [
+          "claim_id",
+          "claim_type",
+          "text",
+          "evidence_refs",
+          "scope",
+          "review_status"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "first_error_step_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "math_check": {
+      "type": "string",
+      "enum": [
+        "VERIFIED",
+        "REFUTED",
+        "UNSUPPORTED_MATH",
+        "UNRESOLVED"
+      ]
+    },
+    "evidence_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "unresolved_issues": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "model_metadata": {
+      "type": "object"
+    }
+  },
+  "required": [
+    "schema_version",
+    "diagnosis_id",
+    "response_ref",
+    "snapshot_hash",
+    "path",
+    "locked_hash",
+    "status",
+    "observed_claims",
+    "first_error_step_id",
+    "math_check",
+    "evidence_refs",
+    "unresolved_issues",
+    "model_metadata"
+  ],
+  "additionalProperties": false
+}

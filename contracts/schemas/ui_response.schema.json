@@ -1,0 +1,228 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aits.local/schemas/UIResponse.schema.json",
+  "title": "UIResponse",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "1.1"
+    },
+    "view_id": {
+      "type": "string",
+      "enum": [
+        "teacher_dashboard",
+        "teacher_classroom",
+        "teacher_student_profile",
+        "teacher_step_diagnosis",
+        "teacher_constellation",
+        "teacher_assignment",
+        "teacher_agent",
+        "teacher_data_governance",
+        "student_home",
+        "student_learning_profile",
+        "student_step_explanation",
+        "student_practice",
+        "student_feedback"
+      ]
+    },
+    "audience": {
+      "type": "string",
+      "enum": [
+        "TEACHER",
+        "STUDENT"
+      ]
+    },
+    "snapshot_hash": {
+      "type": "string",
+      "minLength": 1
+    },
+    "headline": {
+      "type": "string",
+      "minLength": 1
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "finding_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "display_title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "plain_description": {
+            "type": "string",
+            "minLength": 1
+          },
+          "claim_ref": {
+            "type": "string",
+            "minLength": 1
+          },
+          "question_display": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "question_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "knowledge_display": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "evidence_refs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "details_available": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "finding_id",
+          "display_title",
+          "plain_description",
+          "claim_ref",
+          "evidence_refs",
+          "details_available"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "next_actions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string",
+            "minLength": 1
+          },
+          "action_type": {
+            "type": "string",
+            "minLength": 1
+          },
+          "requires_teacher_confirmation": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "label",
+          "action_type",
+          "requires_teacher_confirmation"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "limitations_display": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "evidence_detail_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "demo_role_switch": {
+      "type": "boolean"
+    },
+    "production_auth_confirmed": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "schema_version",
+    "view_id",
+    "audience",
+    "snapshot_hash",
+    "headline",
+    "summary",
+    "findings",
+    "next_actions",
+    "limitations_display",
+    "evidence_detail_refs",
+    "demo_role_switch",
+    "production_auth_confirmed"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "view_id": {
+            "pattern": "^student_"
+          }
+        },
+        "required": [
+          "view_id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "audience": {
+            "const": "STUDENT"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "view_id": {
+            "pattern": "^teacher_"
+          }
+        },
+        "required": [
+          "view_id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "audience": {
+            "const": "TEACHER"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "demo_role_switch": {
+            "const": true
+          }
+        },
+        "required": [
+          "demo_role_switch"
+        ]
+      },
+      "then": {
+        "properties": {
+          "production_auth_confirmed": {
+            "const": false
+          }
+        }
+      }
+    }
+  ]
+}

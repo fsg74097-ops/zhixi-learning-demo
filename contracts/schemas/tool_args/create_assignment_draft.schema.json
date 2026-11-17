@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aits.local/schemas/create_assignment_draft.schema.json",
+  "title": "create_assignment_draft",
+  "type": "object",
+  "properties": {
+    "snapshot_hash": {
+      "type": "string",
+      "minLength": 1
+    },
+    "generation_request_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "idempotency_key": {
+      "type": "string",
+      "minLength": 1
+    },
+    "draft_revision_from": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 1
+    }
+  },
+  "required": [
+    "snapshot_hash",
+    "generation_request_id",
+    "idempotency_key"
+  ],
+  "additionalProperties": false
+}

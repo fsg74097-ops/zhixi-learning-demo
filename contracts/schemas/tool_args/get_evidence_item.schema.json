@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aits.local/schemas/get_evidence_item.schema.json",
+  "title": "get_evidence_item",
+  "type": "object",
+  "properties": {
+    "snapshot_hash": {
+      "type": "string",
+      "minLength": 1
+    },
+    "entity_type": {
+      "type": "string",
+      "enum": [
+        "QUESTION",
+        "RUBRIC_POINT",
+        "SOURCE_PASSAGE",
+        "KNOWLEDGE_NODE",
+        "CURRICULUM_REQUIREMENT"
+      ]
+    },
+    "entity_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "verbatim_required": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "snapshot_hash",
+    "entity_type",
+    "entity_id",
+    "verbatim_required"
+  ],
+  "additionalProperties": false
+}

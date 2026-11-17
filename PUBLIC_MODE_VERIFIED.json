@@ -1,0 +1,11 @@
+{
+  "status": "PASS",
+  "runtime": "Python 3.11",
+  "tests_passed": 6,
+  "data": "SELF_CREATED_ONLY",
+  "arbitrary_server_data_directory": "BLOCKED",
+  "server_file_import": "DISABLED",
+  "teacher_student_pages": "PASS",
+  "agent_revision_confirmation_feedback_export": "PASS",
+  "real_model_requests_by_tests": 0
+}

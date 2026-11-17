@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aits.local/schemas/AssignmentDraft.schema.json",
+  "title": "AssignmentDraft",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "1.1"
+    },
+    "draft_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "snapshot_hash": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "DRAFT",
+        "VALIDATION_PENDING",
+        "NEEDS_REVIEW",
+        "SUBMITTED_FOR_REVIEW",
+        "EXPORTED",
+        "INVALID",
+        "STALE"
+      ]
+    },
+    "target_student_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "requested_item_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "draft_item_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "practice_item_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "purpose": {
+            "type": "string",
+            "enum": [
+              "foundation_check",
+              "targeted_practice",
+              "transfer_application"
+            ]
+          },
+          "knowledge_refs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1
+          },
+          "evidence_refs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "source_status": {
+            "type": "string",
+            "enum": [
+              "APPROVED_PRACTICE",
+              "ASSESSMENT_RESERVED",
+              "GENERATED_CANDIDATE"
+            ]
+          }
+        },
+        "required": [
+          "draft_item_id",
+          "practice_item_id",
+          "purpose",
+          "knowledge_refs",
+          "evidence_refs",
+          "source_status"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "validation_status": {
+      "type": "string",
+      "enum": [
+        "NOT_RUN",
+        "PASSED",
+        "FAILED",
+        "RECHECK_REQUIRED"
+      ]
+    },
+    "requires_teacher_confirmation": {
+      "type": "boolean"
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "draft_id",
+    "revision",
+    "snapshot_hash",
+    "status",
+    "target_student_refs",
+    "requested_item_count",
+    "items",
+    "validation_status",
+    "requires_teacher_confirmation",
+    "warnings"
+  ],
+  "additionalProperties": false
+}

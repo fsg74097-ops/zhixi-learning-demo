@@ -1,0 +1,71 @@
+{
+  "registry_version": "1.1",
+  "protocol": "7+1+2",
+  "tools": [
+    {
+      "tool_id": "query_learning_records",
+      "kind": "READ_ONLY",
+      "arguments_schema": "tool_args/query_learning_records.schema.json",
+      "server_injected_scope": true
+    },
+    {
+      "tool_id": "get_evidence_item",
+      "kind": "READ_ONLY",
+      "arguments_schema": "tool_args/get_evidence_item.schema.json",
+      "server_injected_scope": true
+    },
+    {
+      "tool_id": "search_knowledge",
+      "kind": "READ_ONLY",
+      "arguments_schema": "tool_args/search_knowledge.schema.json",
+      "server_injected_scope": true
+    },
+    {
+      "tool_id": "compute_stats",
+      "kind": "READ_ONLY",
+      "arguments_schema": "tool_args/compute_stats.schema.json",
+      "server_injected_scope": true
+    },
+    {
+      "tool_id": "find_practice_items",
+      "kind": "READ_ONLY",
+      "arguments_schema": "tool_args/find_practice_items.schema.json",
+      "server_injected_scope": true
+    },
+    {
+      "tool_id": "get_data_state",
+      "kind": "READ_ONLY",
+      "arguments_schema": "tool_args/get_data_state.schema.json",
+      "server_injected_scope": true
+    },
+    {
+      "tool_id": "analyze_responses",
+      "kind": "MODEL_EXECUTION",
+      "arguments_schema": "tool_args/analyze_responses.schema.json",
+      "server_injected_scope": true
+    },
+    {
+      "tool_id": "create_assignment_draft",
+      "kind": "DRAFT_WRITE",
+      "arguments_schema": "tool_args/create_assignment_draft.schema.json",
+      "server_injected_scope": true
+    }
+  ],
+  "skills": [
+    {
+      "skill_id": "build_learning_profile",
+      "input_schema": "skill_request.schema.json",
+      "output_schema": "skill_response.schema.json"
+    },
+    {
+      "skill_id": "recommend_learning_tasks",
+      "input_schema": "skill_request.schema.json",
+      "output_schema": "skill_response.schema.json"
+    }
+  ],
+  "internal_components": [
+    "validate_assignment_draft",
+    "semantic_arbiter",
+    "L3.5_gate"
+  ]
+}

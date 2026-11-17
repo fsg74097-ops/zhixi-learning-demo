@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aits.local/schemas/compute_stats.schema.json",
+  "title": "compute_stats",
+  "type": "object",
+  "properties": {
+    "snapshot_hash": {
+      "type": "string",
+      "minLength": 1
+    },
+    "operation": {
+      "type": "string",
+      "enum": [
+        "student_summary",
+        "class_summary",
+        "compare_students",
+        "indicator_distribution",
+        "error_pattern_summary",
+        "compare_assessments"
+      ]
+    },
+    "filters": {
+      "type": "object"
+    },
+    "denominator_policy": {
+      "type": "string",
+      "enum": [
+        "valid_only",
+        "scored_only",
+        "all_assigned"
+      ]
+    },
+    "comparison_basis": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "snapshot_hash",
+    "operation",
+    "filters",
+    "denominator_policy"
+  ],
+  "additionalProperties": false
+}

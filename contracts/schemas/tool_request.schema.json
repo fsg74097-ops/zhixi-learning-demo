@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aits.local/schemas/ToolRequest.schema.json",
+  "title": "ToolRequest",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "1.1"
+    },
+    "tool_call_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "tool_id": {
+      "type": "string",
+      "enum": [
+        "query_learning_records",
+        "get_evidence_item",
+        "search_knowledge",
+        "compute_stats",
+        "find_practice_items",
+        "get_data_state",
+        "analyze_responses",
+        "create_assignment_draft"
+      ]
+    },
+    "arguments": {
+      "type": "object"
+    },
+    "snapshot_hash": {
+      "type": "string",
+      "minLength": 1
+    },
+    "trace_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "deadline_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 120000
+    }
+  },
+  "required": [
+    "schema_version",
+    "tool_call_id",
+    "tool_id",
+    "arguments",
+    "snapshot_hash",
+    "trace_id",
+    "deadline_ms"
+  ],
+  "additionalProperties": false
+}

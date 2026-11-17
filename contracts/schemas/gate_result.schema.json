@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aits.local/schemas/GateResult.schema.json",
+  "title": "GateResult",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "1.1"
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "snapshot_hash": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "GATE_PASS",
+        "GATE_PARTIAL",
+        "GATE_BLOCKED"
+      ]
+    },
+    "assertions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "assertion_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "assertion_type": {
+            "type": "string",
+            "enum": [
+              "OBSERVED_FACT",
+              "STATISTIC",
+              "HYPOTHESIS",
+              "RECOMMENDATION",
+              "SOURCE_QUOTE",
+              "STATUS"
+            ]
+          },
+          "assertion_text": {
+            "type": "string",
+            "minLength": 1
+          },
+          "evidence_refs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "verifier_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "result": {
+            "type": "string",
+            "enum": [
+              "verified",
+              "refuted",
+              "unverifiable",
+              "cannot_verify"
+            ]
+          },
+          "derived_by": {
+            "type": "string",
+            "enum": [
+              "deterministic",
+              "model"
+            ]
+          }
+        },
+        "required": [
+          "assertion_id",
+          "assertion_type",
+          "assertion_text",
+          "evidence_refs",
+          "verifier_id",
+          "result",
+          "derived_by"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "run_id",
+    "snapshot_hash",
+    "status",
+    "assertions",
+    "warnings"
+  ],
+  "additionalProperties": false
+}

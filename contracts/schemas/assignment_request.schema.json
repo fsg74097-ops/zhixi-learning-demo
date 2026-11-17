@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aits.local/schemas/AssignmentGenerationRequest.schema.json",
+  "title": "AssignmentGenerationRequest",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "1.1"
+    },
+    "request_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "snapshot_hash": {
+      "type": "string",
+      "minLength": 1
+    },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "individual",
+        "evidence_group",
+        "whole_class"
+      ]
+    },
+    "student_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "class_ref": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "target_knowledge_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "minItems": 1
+    },
+    "focus_claim_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "constraints": {
+      "type": "object",
+      "properties": {
+        "item_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 30
+        },
+        "max_minutes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 180
+        },
+        "source_policy": {
+          "type": "string",
+          "enum": [
+            "approved_practice_only"
+          ]
+        },
+        "avoid_recent_questions": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "item_count",
+        "max_minutes",
+        "source_policy",
+        "avoid_recent_questions"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "schema_version",
+    "request_id",
+    "snapshot_hash",
+    "mode",
+    "student_refs",
+    "class_ref",
+    "target_knowledge_refs",
+    "focus_claim_refs",
+    "constraints"
+  ],
+  "additionalProperties": false
+}

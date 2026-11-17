@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { margin:0; background:#101c2d; color:#dce8f7; font-family:Inter,"Microsoft YaHei",sans-serif; }
+    .graph-shell { border:1px solid #2a3a51; border-radius:12px; overflow:hidden; }
+    .toolbar { display:flex; gap:12px; align-items:center; padding:12px 16px; font-size:13px; }
+    button { margin-left:auto; border:1px solid #3a526c; border-radius:6px; background:#172a3e; color:#dce8f7; padding:6px 10px; cursor:pointer; }
+    #selection { color:#77ddd8; }
+    svg { width:100%; height:310px; display:block; touch-action:none; }
+    .node { cursor:grab; outline:none; }
+    .node:focus .focus-ring { stroke:#e7eef7; }
+    .node:active { cursor:grabbing; }
+    .legend { padding:10px 16px 14px; color:#9bacc3; font-size:12px; line-height:1.6; }
+    text { fill:#dce8f7; pointer-events:none; }
+  </style>
+</head>
+<body>
+  <div class="graph-shell">
+    <div class="toolbar">
+      <span id="selection">选择知识节点</span>
+      <button id="clear" type="button">清除选择</button>
+    </div>
+    <svg id="graph" viewBox="0 0 860 310" aria-label="可拖动知识星图"></svg>
+    <div class="legend">拖动节点调整视图，点击节点选择，最多选择两个。键盘可用 Tab、Enter 和方向键操作。<br>节点大小表示已评分事件数，颜色表示本次观测得分率，灰色表示尚无有效作答，外圈表示覆盖率。</div>
+  </div>
+  <script>
+    const svg = document.getElementById('graph');
+    const namespace = 'http://www.w3.org/2000/svg';
+    let nodes = [];
+    let edges = [];
+    let positions = new Map();
+    let selected = [];
+    let snapshot = '';
+    let drag = null;
+    let graphHeight = 310;
+
+    function notify(event, movedNodeId = null) {
+      window.parent.postMessage({
+        isStreamlitMessage: true,
+        type: 'streamlit:setComponentValue',
+        dataType: 'json',
+        value: {selected_node_ids: selected, event, moved_node_id: movedNodeId, nonce: Date.now()}
+      }, '*');
+    }
+
+    function element(tag, attributes = {}) {
+      const item = document.createElementNS(namespace, tag);
+      for (const [key, value] of Object.entries(attributes)) item.setAttribute(key, value);
+      return item;
+    }
+
+    function selectNode(identifier) {
+      if (selected.includes(identifier)) selected = selected.filter(value => value !== identifier);
+      else selected = [...selected.slice(-1), identifier];
+      render();
+      notify('NODE_SELECTED');
+    }
+
+    function point(event) {
+      const coordinate = svg.createSVGPoint();
+      coordinate.x = event.clientX;
+      coordinate.y = event.clientY;
+      return coordinate.matrixTransform(svg.getScreenCTM().inverse());
+    }
+
+    function render() {
+      svg.replaceChildren();
+      const names = selected.map(identifier => nodes.find(node => node.id === identifier)?.name || identifier);
+      document.getElementById('selection').textContent = names.length ? names.join(' ＋ ') : '选择知识节点';
+      for (const edge of edges) {
+        const start = positions.get(edge.source);
+        const finish = positions.get(edge.target);
+        if (!start || !finish) continue;
+        const line = element('line', {x1:start.x, y1:start.y, x2:finish.x, y2:finish.y, stroke:'#57738d', 'stroke-width':2, 'stroke-dasharray':'5 5'});
+        const title = element('title');
+        title.textContent = edge.label;
+        line.append(title);
+        svg.append(line);
+      }
+      for (const node of nodes) {
+        const position = positions.get(node.id);
+        const radius = Math.min(44, 28 + Math.sqrt(node.n || 0) * 4);
+        const color = !node.n ? '#34445a' : `hsl(${Math.round(175 + (1 - (node.rate || 0)) * 45)}, 54%, 43%)`;
+        const group = element('g', {transform:`translate(${position.x},${position.y})`, class:'node', tabindex:0, role:'button', 'aria-label':`${node.name}，已评分${node.n}次`, 'data-node-id':node.id});
+        group.append(element('circle', {r:radius+8, fill:'none', stroke:'#30445d', 'stroke-width':3}));
+        group.append(element('circle', {r:radius+8, fill:'none', stroke:'#73cfc5', 'stroke-width':3, 'stroke-dasharray':`${Math.max(0, Math.min(1, node.coverage || 0))*2*Math.PI*(radius+8)} ${2*Math.PI*(radius+8)}`, transform:'rotate(-90)'}));
+        group.append(element('circle', {r:radius, fill:color, stroke:selected.includes(node.id)?'#a5a4ff':'#91d9d4', 'stroke-width':selected.includes(node.id)?4:1.5}));
+        group.append(element('circle', {r:radius+13, fill:'none', stroke:'transparent', 'stroke-width':1, class:'focus-ring'}));
+        const count = element('text', {y:5, 'text-anchor':'middle', 'font-size':18, 'font-weight':600});
+        count.textContent = `${node.n} 次`;
+        group.append(count);
+        const label = element('text', {y:radius+30, 'text-anchor':'middle', 'font-size':14});
+        const chunks = [...node.name].join('').match(/.{1,12}/g) || [];
+        chunks.forEach((chunk, index) => {
+          const span = element('tspan', {x:0, dy:index?19:0});
+          span.textContent = chunk;
+          label.append(span);
+        });
+        group.append(label);
+        group.addEventListener('pointerdown', event => {
+          const origin = point(event);
+          drag = {id:node.id, origin, start:{...positions.get(node.id)}, moved:false};
+          svg.setPointerCapture(event.pointerId);
+          event.preventDefault();
+        });
+        group.addEventListener('keydown', event => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            selectNode(node.id);
+          }
+          const shifts = {ArrowLeft:[-12,0], ArrowRight:[12,0], ArrowUp:[0,-12], ArrowDown:[0,12]};
+          if (shifts[event.key]) {
+            event.preventDefault();
+            const shift = shifts[event.key];
+            position.x = Math.max(75, Math.min(785, position.x+shift[0]));
+            position.y = Math.max(65, Math.min(graphHeight-100, position.y+shift[1]));
+            render();
+            svg.querySelector(`[data-node-id="${CSS.escape(node.id)}"]`).focus();
+            notify('NODE_DRAGGED', node.id);
+          }
+        });
+        svg.append(group);
+      }
+    }
+
+    svg.addEventListener('pointermove', event => {
+      if (!drag) return;
+      const current = point(event);
+      const dx = current.x - drag.origin.x;
+      const dy = current.y - drag.origin.y;
+      if (Math.abs(dx)+Math.abs(dy)>4) drag.moved = true;
+      positions.set(drag.id, {x:Math.max(75, Math.min(785, drag.start.x+dx)), y:Math.max(65, Math.min(graphHeight-100, drag.start.y+dy))});
+      render();
+    });
+    svg.addEventListener('pointerup', () => {
+      if (!drag) return;
+      const completed = drag;
+      drag = null;
+      if (completed.moved) notify('NODE_DRAGGED', completed.id);
+      else selectNode(completed.id);
+    });
+    document.getElementById('clear').addEventListener('click', () => { selected = []; render(); notify('SELECTION_CLEARED'); });
+    window.addEventListener('message', event => {
+      if (event.data.type !== 'streamlit:render') return;
+      const args = event.data.args;
+      nodes = args.nodes || [];
+      edges = args.edges || [];
+      graphHeight = nodes.length > 6 ? Math.ceil(nodes.length/3)*170+60 : 310;
+      svg.setAttribute('viewBox', `0 0 860 ${graphHeight}`);
+      svg.style.height = `${graphHeight}px`;
+      if (snapshot !== args.snapshot_hash) {
+        positions = new Map();
+        selected = [];
+        snapshot = args.snapshot_hash;
+      }
+      nodes.forEach((node, index) => {
+        if (!positions.has(node.id)) {
+          const angle = (index / Math.max(nodes.length, 1)) * Math.PI * 2;
+          positions.set(node.id, nodes.length > 6
+            ? {x:150+(index%3)*280, y:80+Math.floor(index/3)*170}
+            : {x:430 + (nodes.length>1?190:0)*Math.cos(angle), y:140+75*Math.sin(angle)});
+        }
+      });
+      render();
+      window.parent.postMessage({isStreamlitMessage:true, type:'streamlit:setFrameHeight', height:graphHeight+115}, '*');
+    });
+    window.parent.postMessage({isStreamlitMessage:true, type:'streamlit:componentReady', apiVersion:1}, '*');
+  </script>
+</body>
+</html>
