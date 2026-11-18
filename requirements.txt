@@ -1,5 +1,0 @@
-streamlit==1.67.0
-pytest==9.2.0
-pytest-cov==7.1.0
-jsonschema==4.26.0
-pypdf==7.1.0

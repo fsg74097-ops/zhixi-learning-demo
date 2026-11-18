@@ -1,4 +1,5 @@
 """Immutable local assignment revisions and explicit teacher confirmation."""
+from contextlib import closing, contextmanager
 from copy import deepcopy
 from datetime import datetime, timezone
 import io
@@ -24,8 +25,10 @@ class AssignmentStore:
                 CREATE TABLE IF NOT EXISTS confirmations(token TEXT PRIMARY KEY, request TEXT NOT NULL, body TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS practice(attempt_id TEXT PRIMARY KEY,student_id TEXT NOT NULL,body TEXT NOT NULL);''')
 
+    @contextmanager
     def _connection(self):
-        return sqlite3.connect(self.path,timeout=15)
+        with closing(sqlite3.connect(self.path,timeout=15)) as connection, connection:
+            yield connection
 
     def _read(self, connection, draft_id, revision=None):
         if revision is None:
@@ -91,6 +94,9 @@ class AssignmentStore:
                            (draft['draft_id'],draft['revision']))
 
     def create(self, request):
+        snapshot_hash = self.kb.snapshot_hash
+        if request.get('expected_snapshot_hash',snapshot_hash) != snapshot_hash:
+            raise ValueError('STALE_SNAPSHOT')
         students = request.get('student_refs',request.get('target_student_refs',[]))
         if request.get('mode') == 'whole_class':
             class_ref = request.get('class_ref')
@@ -105,12 +111,14 @@ class AssignmentStore:
             raise ValueError('INVALID_ARGUMENT')
         selected = self.kb.practices(node_ids=nodes,item_count=count)
         draft = {'schema_version':'1.1','draft_id':'DRAFT-'+uuid4().hex[:12],'revision':1,
-                 'snapshot_hash':self.kb.snapshot_hash,'status':'DRAFT','target_student_refs':students,
+                 'snapshot_hash':snapshot_hash,'status':'DRAFT','target_student_refs':students,
                  'requested_item_count':count,'max_minutes':request.get('max_minutes',constraints.get('max_minutes',20)),
                  'target_knowledge_refs':nodes,'guidance':request.get('guidance',''),
                  'mode':request.get('mode','individual'),'class_ref':request.get('class_ref'),
                  'items':[],'validation_status':'NOT_RUN','requires_teacher_confirmation':True,'warnings':[],
                  'created_at':datetime.now(timezone.utc).isoformat(),'teacher_content_reviewed':False}
+        if request.get('mode') == 'evidence_group' and request.get('group_candidate'):
+            draft['group_candidate'] = deepcopy(request['group_candidate'])
         for index, question in enumerate(selected):
             qid = question.get('question_id',question.get('id'))
             draft['items'].append({'draft_item_id':f'{draft["draft_id"]}-{index+1}',
@@ -119,6 +127,8 @@ class AssignmentStore:
                 'knowledge_refs':question.get('knowledge_refs',nodes), 'evidence_refs':[qid],
                 'source_status':question.get('source_status','ASSESSMENT_RESERVED'),'teacher_edited':False})
         draft = self._validate(draft)
+        if self.kb.snapshot_hash != snapshot_hash:
+            raise ValueError('STALE_SNAPSHOT')
         with self._connection() as connection:
             self._store(connection,draft)
         return draft
@@ -138,6 +148,11 @@ class AssignmentStore:
             for field in ('target_student_refs','target_knowledge_refs','guidance','teacher_content_reviewed'):
                 if field in changes:
                     updated[field] = changes[field]
+            if (updated.get('group_candidate') and
+                    (set(updated['target_student_refs']) != set(current['target_student_refs'])
+                     or set(updated['target_knowledge_refs']) != set(current['target_knowledge_refs']))):
+                updated.pop('group_candidate')
+                updated['mode'] = 'individual'
             if 'question_ids' in changes:
                 question_ids = changes['question_ids']
                 catalog = self.kb.practice_items
@@ -232,11 +247,20 @@ class AssignmentStore:
         return {'draft_id':draft_id,'revision':revision,'status':'EXPORTED','filename':receipt['artifact_ref'],
                 'content':buffer.getvalue(),'receipt':receipt}
 
-    def submit_answer(self, draft_id, revision, item_id, student_id, answer, process, hint_level=0):
+    @staticmethod
+    def _validate_answer(answer, process, hint_level):
         if (not isinstance(answer,str) or not answer.strip() or len(answer)>4000
                 or not isinstance(process,str) or len(process)>12000
                 or type(hint_level) is not int or not 0<=hint_level<=3):
             raise ValueError('INVALID_ARGUMENT')
+
+    @staticmethod
+    def _save_attempt(connection, record):
+        connection.execute('INSERT INTO practice VALUES(?,?,?)',
+                           (record['attempt_id'],record['student_id'],json.dumps(record,ensure_ascii=False)))
+
+    def submit_answer(self, draft_id, revision, item_id, student_id, answer, process, hint_level=0):
+        self._validate_answer(answer, process, hint_level)
         with self._connection() as connection:
             connection.execute('BEGIN IMMEDIATE')
             draft = self._read(connection,draft_id,revision)
@@ -255,8 +279,26 @@ class AssignmentStore:
                       'snapshot_hash':draft['snapshot_hash'],'status':'待教师评阅',
                       'submitted_at':datetime.now(timezone.utc).isoformat(),
                       'feedback':response_feedback(item['exact_text'],item['answer'],answer,process)}
-            connection.execute('INSERT INTO practice VALUES(?,?,?)',
-                               (record['attempt_id'],student_id,json.dumps(record,ensure_ascii=False)))
+            self._save_attempt(connection, record)
+        return record
+
+    def submit_self_practice(self, practice_id, student_id, snapshot_hash, answer, process, hint_level=0):
+        self._validate_answer(answer, process, hint_level)
+        if student_id not in self.bundle['dataset']['students']:
+            raise ValueError('ACCESS_DENIED')
+        with self.kb.read_scope():
+            if snapshot_hash != self.kb.snapshot_hash:
+                raise ValueError('STALE_SNAPSHOT')
+            question = self.kb.get_practice(practice_id)
+            feedback = response_feedback(question['exact_text'], question['reference_answer'], answer, process)
+        record = {'attempt_id':'ATTEMPT-'+uuid4().hex, 'kind':'SELF_PRACTICE',
+                  'draft_id':None, 'revision':None, 'draft_item_id':practice_id,
+                  'question_id':practice_id, 'student_id':student_id,
+                  'answer':answer,'process':process,'hint_level':hint_level,
+                  'snapshot_hash':snapshot_hash,'status':'本地自检',
+                  'submitted_at':datetime.now(timezone.utc).isoformat(), 'feedback':feedback}
+        with self._connection() as connection:
+            self._save_attempt(connection, record)
         return record
 
     def answers(self, student_id=None):

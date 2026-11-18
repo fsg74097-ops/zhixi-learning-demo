@@ -5,6 +5,8 @@ to callers are copies of a content-addressed snapshot. Model agreement alone
 cannot activate scores, which also need independently reproducible rubric facts.
 """
 from copy import deepcopy
+from contextlib import closing, contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -15,9 +17,9 @@ import subprocess
 import tempfile
 
 from governance_core import SCORE_ERRORS, _events
+from knowledge_relations import MAPPING_VERSION, course_link, joint_assessment_edges, step_links
 from response_feedback import response_feedback
-from step_math import clean_expression
-from project_paths import public_demo_mode
+from rubric_verifier import verify_rubric
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -54,10 +56,12 @@ class KnowledgeBase:
         location_id = _hash(str(folder).casefold())[:20]
         self.database_path = self.storage_root / location_id / 'knowledge.sqlite3'
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
-        self._entities, self._nodes, self._questions, self.relations = {}, {}, {}, []
+        self._entities, self._nodes, self._questions, self._base_relations = {}, {}, {}, []
+        self._relations, self._relation_review_events = [], []
         self._imported_passages = []
         self._stale_passage_count = 0
         self._registered_practices = {}
+        self._read_scope_var = ContextVar('knowledge_read_' + str(id(self)), default=None)
         self._assert_sources()
         self._build_knowledge()
         self._base_records, self._history, self._revision_issues = self._record_views()
@@ -68,54 +72,89 @@ class KnowledgeBase:
     @property
     def nodes(self):
         self._assert_sources()
-        return deepcopy(self._nodes)
+        return deepcopy(self._read_view('nodes'))
 
     @property
     def questions(self):
         self._assert_sources()
-        return deepcopy(self._questions)
+        return deepcopy(self._read_view('questions'))
 
     @property
     def evidence(self):
         self.refresh()
-        return deepcopy(self._entities)
+        return deepcopy(self._read_view('entities'))
 
     @property
     def snapshot(self):
-        self.refresh()
-        return deepcopy(self._snapshot)
+        return self.refresh()
 
     @property
     def snapshot_hash(self):
-        self.refresh()
-        return self._snapshot['snapshot_hash']
+        return self.refresh()['snapshot_hash']
 
     @property
     def teacher_events(self):
-        with self._connect() as connection:
+        if self._active_read_scope():
+            return deepcopy(self._active_read_scope()['teacher_events'])
+        with self._transaction() as connection:
             return self._load_events(connection, 'teacher_decisions')
 
     @property
     def candidates(self):
-        with self._connect() as connection:
+        if self._active_read_scope():
+            return deepcopy(self._active_read_scope()['candidates'])
+        with self._transaction() as connection:
             return self._load_events(connection, 'score_candidates')
+
+    @property
+    def dependency_fingerprint(self):
+        return self.refresh()['dependency_fingerprint']
+
+    @property
+    def invalidations(self):
+        if self._active_read_scope():
+            return deepcopy(self._active_read_scope()['invalidations'])
+        with self._transaction() as connection:
+            return [json.loads(row[0]) for row in connection.execute(
+                'SELECT payload FROM event_invalidations WHERE dataset_hash=? ORDER BY rowid', (self.dataset_hash,))]
+
+    def _dependency_context(self):
+        from governance_versions import dependency_context
+        from knowledge_contracts import CONTRACT_VERSION, SCHEMA_PATH
+        modules = ('knowledge_runtime.py', 'governance_versions.py', 'knowledge_contracts.py',
+                   'official_data.py', 'governance_core.py', 'step_math.py', 'response_feedback.py',
+                   'agent_verification.py', 'knowledge_relations.py', 'rubric_verifier.py')
+        codes = {name: hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
+                 for name in modules if Path(__file__).with_name(name).is_file()}
+        relevant = {identity: item for identity, item in self._entities.items()
+                    if item['type'] in {'KNOWLEDGE_NODE', 'CURRICULUM_REQUIREMENT', 'QUESTION', 'REFERENCE_ANSWER',
+                                        'RUBRIC_POINT', 'SOURCE_PASSAGE'}}
+        return dependency_context(dataset_hash=self.dataset_hash, rules_version=RULES_VERSION, code_hashes=codes,
+                                  knowledge_hash=_hash({'entities': relevant, 'relations': self._relations}),
+                                  schema_versions={'evidence': CONTRACT_VERSION,
+                                                   'evidence_schema_sha256': hashlib.sha256(SCHEMA_PATH.read_bytes()).hexdigest()},
+                                  prompt_versions={'diagnosis': 'Verification-1.1', 'grading': 'Rubric-1'})
 
     @property
     def practice_items(self):
         self.refresh()
-        items = {identity: {**deepcopy(item), 'practice_id': identity} for identity, item in self._questions.items()
+        items = {identity: {**deepcopy(item), 'practice_id': identity} for identity, item in self._read_view('questions').items()
                  if item['source_status'] == 'APPROVED_PRACTICE'}
-        items.update({identity: deepcopy(item) for identity, item in self._registered_practices.items()
+        items.update({identity: deepcopy(item) for identity, item in self._read_view('registered_practices').items()
                       if item['source_status'] == 'APPROVED_PRACTICE'})
         return items
 
     @property
     def practice_review_events(self):
-        with self._connect() as connection:
+        if self._active_read_scope():
+            return deepcopy(self._active_read_scope()['practice_review_events'])
+        with self._transaction() as connection:
             return [json.loads(row[0]) for row in connection.execute(
                 'SELECT payload FROM practice_reviews WHERE dataset_hash=? ORDER BY rowid', (self.dataset_hash,))]
 
     def _assert_sources(self):
+        if self._active_read_scope():
+            return
         verified = {}
         for item in self.dataset['sources'].values():
             path = Path(item['path'])
@@ -128,6 +167,50 @@ class KnowledgeBase:
             source = item['source_ref']
             if not self._passage_sources_valid(source, verified):
                 raise ValueError('STALE_SOURCE：知识来源已变化，请重新导入并核验原文')
+
+    def _active_read_scope(self):
+        return self._read_scope_var.get()
+
+    def _read_view(self, name):
+        scope = self._active_read_scope()
+        return scope[name] if scope is not None else getattr(self, '_' + name)
+
+    def _require_writable(self):
+        if self._active_read_scope() is not None:
+            raise ValueError('READ_ONLY_SCOPE')
+
+    @contextmanager
+    def read_scope(self):
+        """Pin one short read request; validate sources and DB again on exit.
+
+        The context is local to the current thread/task, never a cross-request
+        cache. Do not wrap model/network calls or mutation commands in it.
+        """
+        if self._active_read_scope() is not None:
+            yield self
+            return
+        snapshot = self.refresh()
+        monitor = self._connect()
+        try:
+            version = monitor.execute('PRAGMA data_version').fetchone()[0]
+            frame = {name: deepcopy(getattr(self, '_' + name)) for name in
+                     ('nodes', 'questions', 'entities', 'relations', 'registered_practices', 'relation_review_events')}
+            frame['snapshot'] = deepcopy(snapshot)
+            frame['teacher_events'] = self._load_events(monitor, 'teacher_decisions')
+            frame['candidates'] = self._load_events(monitor, 'score_candidates')
+            frame['practice_review_events'] = self.practice_review_events
+            frame['invalidations'] = self.invalidations
+            token = self._read_scope_var.set(frame)
+            try:
+                yield self
+            finally:
+                self._read_scope_var.reset(token)
+                changed = monitor.execute('PRAGMA data_version').fetchone()[0] != version
+                refreshed = self.refresh()
+                if changed or refreshed['snapshot_hash'] != snapshot['snapshot_hash']:
+                    raise ValueError('STALE_SNAPSHOT')
+        finally:
+            monitor.close()
 
     @staticmethod
     def _file_matches(path, expected, verified):
@@ -238,7 +321,8 @@ class KnowledgeBase:
             if raw['材料类型'] != '题目':
                 continue
             identity = raw['材料编号']
-            knowledge_refs = [key for key in _ids(raw['指标编号']) if key in self._nodes]
+            knowledge_refs = list(dict.fromkeys(key for key in _ids(raw['指标编号']) if key in self._nodes))
+            indicator_source = self._source_ref('题目与材料', number, '指标编号')
             source_status = 'APPROVED_PRACTICE' if self.is_self_created else 'ASSESSMENT_RESERVED'
             question = {'id': identity, 'question_id': identity, 'exact_text': raw['题干或内容'],
                         'reference_answer': raw['参考答案'], 'reference_explanation': raw['参考解析'],
@@ -266,15 +350,13 @@ class KnowledgeBase:
                                      display_name=f'评分依据 · {identity} · {rubric_id}')
                 question['rubric_points'].append(point)
                 for node_id in knowledge_refs:
-                    self.relations.append({'relation_type': 'DIRECT_ASSESSED', 'from_id': rubric_id,
-                                           'to_id': node_id, 'question_id': identity,
-                                           'review_status': point['review_status'], 'source_ref': source})
+                    relation = course_link(identity, node_id, source, official=not self.is_self_created, rubric_id=rubric_id)
+                    relation['indicator_source_ref'] = indicator_source
+                    self._base_relations.append(relation)
             self._questions[identity] = question
             for node_id in knowledge_refs:
                 self._nodes[node_id]['question_ids'].append(identity)
-                self.relations.append({'relation_type': 'DIRECT_ASSESSED', 'from_id': identity,
-                                       'to_id': node_id, 'question_id': identity,
-                                       'review_status': question['review_status'], 'source_ref': question['source_ref']})
+                self._base_relations.append(course_link(identity, node_id, indicator_source, official=not self.is_self_created))
         # The legacy resource index contains formatted summaries and page
         # locators. Exact SOURCE_PASSAGE objects require an actual source import.
         self.resource_locators = []
@@ -368,8 +450,13 @@ class KnowledgeBase:
         connection.execute('PRAGMA foreign_keys=ON')
         return connection
 
+    @contextmanager
+    def _transaction(self):
+        with closing(self._connect()) as connection, connection:
+            yield connection
+
     def _initialize_database(self):
-        with self._connect() as connection:
+        with self._transaction() as connection:
             connection.execute('PRAGMA journal_mode=WAL')
             connection.executescript('''
                 CREATE TABLE IF NOT EXISTS knowledge_entities (
@@ -378,6 +465,8 @@ class KnowledgeBase:
                 CREATE TABLE IF NOT EXISTS knowledge_relations (
                     dataset_hash TEXT NOT NULL, relation_hash TEXT NOT NULL, payload TEXT NOT NULL,
                     PRIMARY KEY(dataset_hash, relation_hash));
+                CREATE TABLE IF NOT EXISTS knowledge_relation_reviews (
+                    review_id TEXT PRIMARY KEY, dataset_hash TEXT NOT NULL, payload TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS student_records (
                     dataset_hash TEXT NOT NULL, record_id TEXT NOT NULL, payload TEXT NOT NULL,
                     PRIMARY KEY(dataset_hash, record_id));
@@ -398,12 +487,15 @@ class KnowledgeBase:
                 CREATE TABLE IF NOT EXISTS practice_reviews (
                     review_id TEXT PRIMARY KEY, dataset_hash TEXT NOT NULL, practice_id TEXT NOT NULL,
                     payload TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS event_invalidations (
+                    invalidation_id TEXT PRIMARY KEY, dataset_hash TEXT NOT NULL,
+                    target_event_id TEXT NOT NULL, payload TEXT NOT NULL);
             ''')
             for identity, item in self._entities.items():
                 if item['type'] not in {'STUDENT_RESPONSE', 'STUDENT_STEP'}:
                     connection.execute('INSERT OR IGNORE INTO knowledge_entities VALUES(?,?,?)',
                                        (self.dataset_hash, identity, _json(item)))
-            for item in self.relations:
+            for item in self._base_relations:
                 connection.execute('INSERT OR IGNORE INTO knowledge_relations VALUES(?,?,?)',
                                    (self.dataset_hash, _hash(item), _json(item)))
             for row in self._history:
@@ -414,12 +506,35 @@ class KnowledgeBase:
         return [json.loads(row[0]) for row in connection.execute(
             f'SELECT payload FROM {table} WHERE dataset_hash=? ORDER BY rowid', (self.dataset_hash,))]
 
+    def _compatible_events(self, connection, table, events, context, by_id, accepted_candidates=None):
+        from governance_versions import classify_binding, invalidation_record
+        active, stale = [], []
+        for event in events:
+            reasons = classify_binding(event, context, by_id.get(event['record_id']))
+            if (not reasons and event.get('teacher_action') == 'ACCEPT_AI' and
+                    event.get('accepted_candidate_id') not in accepted_candidates):
+                reasons.append('REFERENCED_CANDIDATE_STALE')
+            if reasons:
+                invalidation = invalidation_record(table, event, context, reasons)
+                connection.execute('INSERT OR IGNORE INTO event_invalidations VALUES(?,?,?,?)',
+                                   (invalidation['invalidation_id'], self.dataset_hash,
+                                    invalidation['target_event_id'], _json(invalidation)))
+                stale.append(invalidation)
+            else:
+                active.append(event)
+        return active, stale
+
     def _build_snapshot(self, connection, candidates=None, decisions=None):
+        self._load_relation_reviews(connection)
         candidates = self._load_events(connection, 'score_candidates') if candidates is None else candidates
         decisions = self._load_events(connection, 'teacher_decisions') if decisions is None else decisions
         records = deepcopy(self._base_records)
         by_id = {row['record_id']: row for row in records}
+        context = self._dependency_context()
+        candidates, stale_candidates = self._compatible_events(connection, 'score_candidates', candidates, context, by_id)
         validated_by_id = {item['candidate_id']: item for item in candidates if item['candidate_status'] == 'VALIDATED'}
+        decisions, stale_decisions = self._compatible_events(connection, 'teacher_decisions', decisions, context,
+                                                             by_id, accepted_candidates=validated_by_id)
         for candidate in candidates:
             row = by_id[candidate['record_id']]
             row.update({key: deepcopy(candidate[key]) for key in ('candidate_id', 'candidate_score', 'candidate_point_scores', 'candidate_status', 'validation')})
@@ -459,14 +574,17 @@ class KnowledgeBase:
                     for table in ('score_candidates', 'teacher_decisions'))
         snapshot = {'schema_version': 'MODEL_READY-1.0', 'rules_version': RULES_VERSION,
                     'dataset_hash': self.dataset_hash, 'batch_id': self.dataset_hash[:20],
+                    'dependency_fingerprint': context['fingerprint'], 'dependency_context': context,
                     'source_files': {name: {'sha256': item['sha256'], 'rows': item['rows']}
                                      for name, item in sorted(self.dataset['sources'].items())},
                     'as_of': self.dataset.get('as_of'), 'data_origin': 'SELF_CREATED' if self.is_self_created else 'SOURCE_PROVIDED',
-                    'knowledge_hash': _hash({identity: item for identity, item in self._entities.items()
-                                             if item['type'] not in {'STUDENT_RESPONSE', 'STUDENT_STEP'}}),
+                    'knowledge_hash': _hash({'entities': {identity: item for identity, item in self._entities.items()
+                                                          if item['type'] not in {'STUDENT_RESPONSE', 'STUDENT_STEP'}},
+                                             'relations': self._relations}),
                     'records': records, 'history': deepcopy(self._history),
                     'unresolved_issues': deepcopy(self.dataset['issues']) + self._revision_issues,
-                    'stale_event_count': stale,
+                    'stale_event_count': stale + len(stale_candidates) + len(stale_decisions),
+                    'invalidated_events': stale_candidates + stale_decisions,
                     'stale_passage_count': self._stale_passage_count,
                     'summary': {'raw_records': len(self._history), 'current_events': len(records),
                                 'scored_events': len(scored), 'score_numerator': sum(row['effective_score'] for row in scored),
@@ -480,15 +598,17 @@ class KnowledgeBase:
         return snapshot
 
     def refresh(self):
+        if self._active_read_scope() is not None:
+            return deepcopy(self._active_read_scope()['snapshot'])
         self._assert_sources()
-        with self._connect() as connection:
+        with self._transaction() as connection:
             connection.execute('BEGIN IMMEDIATE')
             self._load_imported_passages(connection)
             self._load_practices(connection)
-            self._snapshot = self._build_snapshot(connection)
+            snapshot = self._build_snapshot(connection)
             connection.execute('INSERT OR IGNORE INTO model_ready_snapshots VALUES(?,?,?)',
-                               (self._snapshot['snapshot_hash'], self.dataset_hash, _json(self._snapshot)))
-        return deepcopy(self._snapshot)
+                               (snapshot['snapshot_hash'], self.dataset_hash, _json(snapshot)))
+        return snapshot
 
     def _load_imported_passages(self, connection):
         verified = {}
@@ -512,8 +632,7 @@ class KnowledgeBase:
         UTF-8 text/Markdown is read directly. PDF import uses pypdf when installed
         and checks the requested physical page. It never reconstructs absent text.
         """
-        if public_demo_mode():
-            raise ValueError('PUBLIC_DEMO_IMPORT_DISABLED')
+        self._require_writable()
         self._assert_sources()
         if not isinstance(reviewer_id, str) or not reviewer_id.strip():
             raise ValueError('REVIEWER_REQUIRED')
@@ -572,7 +691,7 @@ class KnowledgeBase:
                             'reviewer_role': review_context})
         if len({item['id'] for item in checked}) != len(checked):
             raise ValueError('DUPLICATE_PASSAGE_ID')
-        with self._connect() as connection:
+        with self._transaction() as connection:
             connection.execute('BEGIN IMMEDIATE')
             self._load_imported_passages(connection)
             snapshot = self._build_snapshot(connection)
@@ -592,16 +711,16 @@ class KnowledgeBase:
         return {'imported_ids': [item['id'] for item in checked], 'snapshot_hash': self.snapshot_hash}
 
     def get(self, entity_id, audience='TEACHER', *, student_id=None):
-        self.refresh()
+        snapshot = self.refresh()
         if audience not in {'TEACHER', 'STUDENT'}:
             raise ValueError('ACCESS_DENIED')
-        item = self._entities.get(entity_id)
+        item = self._read_view('entities').get(entity_id)
         if item is None:
             raise ValueError('EVIDENCE_NOT_FOUND')
         if audience == 'STUDENT' and (item['type'] == 'REFERENCE_ANSWER' or
                 item.get('student_id') is not None and item['student_id'] != student_id):
             raise ValueError('ACCESS_DENIED')
-        return {**deepcopy(item), 'snapshot_hash': self._snapshot['snapshot_hash']}
+        return {**deepcopy(item), 'snapshot_hash': snapshot['snapshot_hash']}
 
     def search(self, query='', node_ids=(), limit=20):
         self._assert_sources()
@@ -609,7 +728,7 @@ class KnowledgeBase:
             raise ValueError('INVALID_ARGUMENT')
         selected = set(node_ids)
         results = []
-        for item in self._entities.values():
+        for item in self._read_view('entities').values():
             if item['type'] in {'STUDENT_RESPONSE', 'STUDENT_STEP', 'REFERENCE_ANSWER'}:
                 continue
             if selected and not selected.intersection(item.get('knowledge_refs', [])):
@@ -642,18 +761,19 @@ class KnowledgeBase:
         if audience != 'TEACHER':
             raise ValueError('ACCESS_DENIED')
         self.refresh()
-        if practice_id not in self._registered_practices:
+        if practice_id not in self._read_view('registered_practices'):
             raise ValueError('EVIDENCE_NOT_FOUND')
-        return deepcopy(self._registered_practices[practice_id])
+        return deepcopy(self._read_view('registered_practices')[practice_id])
 
     def review_practice(self, practice_id, *, reviewer_id, approved, authorized_use=None,
                         expected_snapshot_hash=None, review_context='DEMO_TEACHER'):
+        self._require_writable()
         self._assert_sources()
         if not isinstance(reviewer_id, str) or not reviewer_id.strip() or review_context not in {'AUTOMATED', 'DEMO_TEACHER'}:
             raise ValueError('REVIEWER_REQUIRED')
         if type(approved) is not bool or authorized_use is not None and type(authorized_use) is not bool:
             raise ValueError('INVALID_PRACTICE_INPUT')
-        with self._connect() as connection:
+        with self._transaction() as connection:
             connection.execute('BEGIN IMMEDIATE')
             self._load_imported_passages(connection)
             self._load_practices(connection)
@@ -696,6 +816,7 @@ class KnowledgeBase:
                          review_status=item.get('review_status', 'AI_CANDIDATE'), source_status=item['source_status'])
 
     def import_practice_items(self, items, *, reviewer_id, expected_snapshot_hash=None, approved=False, review_context='AUTOMATED'):
+        self._require_writable()
         self._assert_sources()
         if not isinstance(reviewer_id, str) or not reviewer_id.strip() or review_context not in {'AUTOMATED', 'DEMO_TEACHER'}:
             raise ValueError('REVIEWER_REQUIRED')
@@ -728,7 +849,7 @@ class KnowledgeBase:
             checked.append((item, review))
         if len({item['practice_id'] for item, _ in checked}) != len(checked):
             raise ValueError('DUPLICATE_PRACTICE_ID')
-        with self._connect() as connection:
+        with self._transaction() as connection:
             connection.execute('BEGIN IMMEDIATE')
             self._load_imported_passages(connection)
             self._load_practices(connection)
@@ -756,22 +877,128 @@ class KnowledgeBase:
         row = next((item for item in snapshot['records'] if item['record_id'] == record_id), None)
         if row is None:
             raise ValueError('RESPONSE_NOT_CURRENT')
-        question = deepcopy(self._questions[row['question_id']])
+        return self._evidence_bundle_for_row(row, snapshot, audience)
+
+    def _evidence_bundle_for_row(self, row, snapshot, audience):
+        record_id = row['record_id']
+        entities = self._read_view('entities')
+        question = deepcopy(self._read_view('questions')[row['question_id']])
+        steps = [deepcopy(entities[identity]) for identity in row['step_refs']]
+        links = [deepcopy(item) for item in self._read_view('relations')
+                 if item['question_id'] == row['question_id']
+                 and item['review_status'] not in {'REJECTED', 'DISPUTED', 'UNRESOLVED'}]
+        details = {}
         if audience == 'STUDENT':
             question.pop('reference_answer', None)
             question.pop('reference_explanation', None)
-        steps = [deepcopy(self._entities[identity]) for identity in row['step_refs']]
-        links = [deepcopy(item) for item in self.relations if item['question_id'] == row['question_id']]
-        passages = [deepcopy(item) for item in self._entities.values() if item['type'] == 'SOURCE_PASSAGE'
+        else:
+            rubric = verify_rubric(question, row, steps, self_created=self.is_self_created)
+            details = {'rubric_verification': rubric, **step_links(
+                steps, rubric['points'], [link for link in links if link['relation_kind'] == 'RUBRIC_NODE'])}
+        passages = [deepcopy(item) for item in entities.values() if item['type'] == 'SOURCE_PASSAGE'
                     and set(row['knowledge_refs']).intersection(item.get('knowledge_refs', []))]
         refs = [record_id, row['question_id'], *row['rubric_refs'], *row['knowledge_refs'],
                 *row['step_refs'], *(passage['id'] for passage in passages)]
         return {'schema_version': '1.1', 'bundle_id': 'EB:' + record_id, 'snapshot_hash': snapshot['snapshot_hash'],
                 'question': question, 'response': deepcopy(row), 'rubric_points': question['rubric_points'],
                 'student_steps': steps, 'knowledge_links': links, 'source_passages': passages,
-                'evidence_refs': [{'id': identity, 'evidence_id': identity, 'type': self._entities[identity]['type'],
-                                   'source_hash': self._entities[identity]['source_ref']['source_hash']} for identity in refs],
-                'verification_state': deepcopy(row['validation'])}
+                'evidence_refs': [{'id': identity, 'evidence_id': identity, 'type': entities[identity]['type'],
+                                   'source_hash': entities[identity]['source_ref']['source_hash']} for identity in refs],
+                'verification_state': deepcopy(row['validation']), **details}
+
+    def contract_evidence_bundle(self, record_id, audience='TEACHER', *, student_id=None):
+        return self.contract_evidence_bundles([record_id], audience, student_id=student_id)[0]
+
+    def contract_evidence_bundles(self, record_ids=None, audience='TEACHER', *, student_id=None):
+        from knowledge_contracts import evidence_bundle_contract
+        snapshot = self.snapshot
+        if audience not in {'TEACHER', 'STUDENT'}:
+            raise ValueError('ACCESS_DENIED')
+        requested = set(record_ids) if record_ids is not None else None
+        selected = [row for row in snapshot['records'] if requested is None or row['record_id'] in requested]
+        if requested is not None and len(selected) != len(requested):
+            raise ValueError('RESPONSE_NOT_CURRENT')
+        if audience == 'STUDENT':
+            if requested is not None and any(row['student_id'] != student_id for row in selected):
+                raise ValueError('ACCESS_DENIED')
+            selected = [row for row in selected if row['student_id'] == student_id]
+        result = [evidence_bundle_contract(self._evidence_bundle_for_row(row, snapshot, audience),
+                                           batch_id=snapshot['batch_id'], nodes=self._read_view('nodes'),
+                                           entities=self._read_view('entities'), self_created=self.is_self_created) for row in selected]
+        self._assert_sources()
+        return result
+
+    def export_field_mapping(self):
+        from knowledge_contracts import field_mappings
+        self._assert_sources()
+        return field_mappings(self.dataset, self_created=self.is_self_created)
+
+    def _load_relation_reviews(self, connection):
+        self._relation_review_events = self._load_events(connection, 'knowledge_relation_reviews')
+        latest = {event['relation_id']: event for event in self._relation_review_events
+                  if event['base_mapping_version'] == MAPPING_VERSION}
+        self._relations = []
+        for item in self._base_relations:
+            review = latest.get(item['relation_id'], {})
+            reviewed_fields = {field: review[field] for field in ('review_status', 'mapping_version', 'review_id')
+                               if field in review}
+            self._relations.append({**item, **reviewed_fields})
+
+    def course_relationships(self, question_id=None):
+        """Read typed course links and evidenced joint-assessment edges."""
+        snapshot_hash = self.snapshot_hash
+        if question_id is not None and question_id not in self._read_view('questions'):
+            raise ValueError('UNKNOWN_QUESTION')
+        relations = [item for item in self._read_view('relations')
+                     if question_id is None or item['question_id'] == question_id]
+        question_links = [item for item in relations if item['relation_kind'] == 'QUESTION_NODE']
+        return deepcopy({'snapshot_hash': snapshot_hash, 'mapping_version': MAPPING_VERSION,
+                         'question_node_links': question_links,
+                         'rubric_node_links': [item for item in relations if item['relation_kind'] == 'RUBRIC_NODE'],
+                         'node_edges': joint_assessment_edges(question_links)})
+
+    def export_q_matrix(self):
+        links = self.course_relationships()['question_node_links']
+        return [{field: item[field] for field in ('question_id', 'node_id', 'relation_type', 'review_status',
+                                                  'source_ref', 'mapping_version', 'evidence_refs')}
+                for item in links]
+
+    def course_relationship_reviews(self, relation_id=None):
+        self.refresh()
+        return deepcopy([event for event in self._read_view('relation_review_events')
+                         if relation_id is None or event['relation_id'] == relation_id])
+
+    def review_course_relationship(self, relation_id, *, review_status, expected_snapshot_hash, reviewer_id, reason):
+        """Append a local demo-teacher ruling on a derived course relation."""
+        self._require_writable()
+        if review_status not in {'HUMAN_VERIFIED', 'DISPUTED', 'REJECTED', 'UNRESOLVED'}:
+            raise ValueError('INVALID_REVIEW_STATUS')
+        if any(not isinstance(value, str) or not value.strip() for value in (reviewer_id, reason)):
+            raise ValueError('REASON_AND_REVIEWER_REQUIRED')
+        self._assert_sources()
+        with self._transaction() as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            self._load_imported_passages(connection)
+            self._load_practices(connection)
+            current = self._build_snapshot(connection)
+            if current['snapshot_hash'] != expected_snapshot_hash:
+                raise ValueError('STALE_SNAPSHOT')
+            link = next((item for item in self._relations if item['relation_id'] == relation_id), None)
+            if link is None:
+                raise ValueError('UNKNOWN_RELATIONSHIP')
+            if link['relation_kind'] != 'RUBRIC_NODE':
+                raise ValueError('SOURCE_RELATIONSHIP_IMMUTABLE')
+            event = {'relation_id': relation_id, 'review_status': review_status,
+                     'previous_review_status': link['review_status'], 'previous_mapping_version': link['mapping_version'],
+                     'base_mapping_version': MAPPING_VERSION, 'previous_snapshot_hash': expected_snapshot_hash,
+                     'reviewer_id': reviewer_id, 'reason': reason, 'reviewer_role': 'DEMO_TEACHER',
+                     'owner_accepted': False, 'recorded_at': datetime.now(timezone.utc).isoformat()}
+            event['review_id'] = 'KR:' + _hash(event)[:24]
+            event['mapping_version'] = MAPPING_VERSION + '/' + event['review_id']
+            connection.execute('INSERT INTO knowledge_relation_reviews VALUES(?,?,?)',
+                               (event['review_id'], self.dataset_hash, _json(event)))
+        self.refresh()
+        return deepcopy(event)
 
     def _score_bounds(self, row, score, points):
         limits = self.dataset['question_points'][row['question_id']]
@@ -781,36 +1008,9 @@ class KnowledgeBase:
             raise ValueError('INVALID_SCORE：总分与真实评分点范围必须一致')
 
     def _rubric_facts(self, row):
-        if not self.is_self_created:
-            return None, None
-        question = self._questions[row['question_id']]
-        feedback = response_feedback(question['exact_text'], question['reference_answer'],
-                                     row['student_answer'], row['student_steps'])
-        if feedback['answer_validity'] == 'UNRESOLVED' or any(step['local_validity'] == 'UNRESOLVED' for step in feedback['steps']):
-            return None, feedback
-        scores = {}
-        for point in question['rubric_points']:
-            text = point['exact_text']
-            negative = [step for step in feedback['steps'] if step['rule']['id'] == 'NEGATIVE_SCALING']
-            valid = [step for step in feedback['steps'] if step['local_validity'] == 'VALID']
-            if text == '同除以负数并计算边界':
-                fulfilled = bool(negative)
-            elif text in {'正确改变不等号方向', '同除负数并改变方向'}:
-                fulfilled = any(step['local_validity'] == 'VALID' for step in negative)
-            elif text.startswith('移项得到'):
-                expected = clean_expression(text.removeprefix('移项得到'))
-                fulfilled = any(clean_expression(step['target']) == expected for step in valid)
-            elif text == '正确填写最终化简结果':
-                fulfilled = feedback['answer_validity'] == 'VALID'
-            elif text in {'识别同类项', '正确合并同类项'}:
-                fulfilled = any(step['source'].count('x') >= 2 and step['target'].count('x') == 1
-                                and '(' not in step['source'] and '(' not in step['target'] for step in valid)
-            elif text == '正确去括号':
-                fulfilled = any('(' in step['source'] and '(' not in step['target'] for step in valid)
-            else:
-                return None, feedback
-            scores[point['id']] = point['max_score'] if fulfilled else 0
-        return scores, feedback
+        return verify_rubric(self._questions[row['question_id']], row,
+                             [self._entities[identity] for identity in row['step_refs']],
+                             self_created=self.is_self_created)
 
     def _cross_checked(self, proposal):
         paths = [proposal.get('path_a'), proposal.get('path_b')]
@@ -845,13 +1045,17 @@ class KnowledgeBase:
         return row
 
     def add_candidate(self, proposal):
+        self._require_writable()
         self._assert_sources()
-        with self._connect() as connection:
+        with self._transaction() as connection:
             connection.execute('BEGIN IMMEDIATE')
+            self._load_imported_passages(connection)
             existing = self._existing_request(connection, 'score_candidates', proposal)
             if existing is not None:
+                self._load_relation_reviews(connection)
+                if existing.get('dependency_fingerprint') != self._dependency_context()['fingerprint']:
+                    raise ValueError('STALE_VALIDATION_CONTEXT')
                 return existing
-            self._load_imported_passages(connection)
             snapshot = self._build_snapshot(connection)
             row = self._bound_record(proposal, snapshot)
             if proposal.get('event_id') != row['event_id']:
@@ -868,9 +1072,10 @@ class KnowledgeBase:
                         not isinstance(quote.get('quote'), str) or not quote['quote'].strip() or
                         quote['quote'] not in self._entities[quote['id']]['exact_text']):
                     raise ValueError('EVIDENCE_MISMATCH')
-            rubric_scores, feedback = self._rubric_facts(row)
+            rubric = self._rubric_facts(row)
+            rubric_scores = rubric['verified_point_scores']
             validation = {'schema_validation': True, 'evidence_validation': True,
-                          'math_validation': feedback is not None and feedback['answer_validity'] != 'UNRESOLVED',
+                          'math_validation': rubric['answer_validity'] != 'UNRESOLVED',
                           'rubric_validation': rubric_scores is not None and rubric_scores == proposal['candidate_point_scores'],
                           'cross_check_status': 'LOCKED_OUTPUTS_MATCH' if self._cross_checked(proposal) else 'UNRESOLVED'}
             arbitration = proposal.get('semantic_arbitration', {'required': False, 'status': 'NOT_REQUIRED'})
@@ -879,21 +1084,28 @@ class KnowledgeBase:
             validation['semantic_arbitration'] = arbitration.get('status', 'UNRESOLVED') if isinstance(arbitration, dict) else 'UNRESOLVED'
             validated = all(validation[key] for key in ('schema_validation', 'evidence_validation', 'math_validation', 'rubric_validation')) and validation['cross_check_status'] == 'LOCKED_OUTPUTS_MATCH' and arbitration_ok
             candidate = {**deepcopy(proposal), 'candidate_id': 'CAND:' + _hash(proposal)[:24],
+                         'dependency_fingerprint': snapshot['dependency_fingerprint'],
+                         'dependency_context': snapshot['dependency_context'],
                          'candidate_status': 'VALIDATED' if validated else 'UNRESOLVED', 'validation': validation,
-                         'verified_rubric_scores': rubric_scores, 'created_at': datetime.now(timezone.utc).isoformat()}
+                         'verified_rubric_scores': rubric_scores, 'independent_rubric_verification': rubric,
+                         'created_at': datetime.now(timezone.utc).isoformat()}
             connection.execute('INSERT INTO score_candidates VALUES(?,?,?,?,?)',
                                (candidate['candidate_id'], proposal['request_id'], self.dataset_hash, _hash(proposal), _json(candidate)))
         self.refresh()
         return deepcopy(candidate)
 
     def teacher_decision(self, decision):
+        self._require_writable()
         self._assert_sources()
-        with self._connect() as connection:
+        with self._transaction() as connection:
             connection.execute('BEGIN IMMEDIATE')
+            self._load_imported_passages(connection)
             existing = self._existing_request(connection, 'teacher_decisions', decision)
             if existing is not None:
+                self._load_relation_reviews(connection)
+                if existing.get('dependency_fingerprint') != self._dependency_context()['fingerprint']:
+                    raise ValueError('STALE_VALIDATION_CONTEXT')
                 return existing
-            self._load_imported_passages(connection)
             snapshot = self._build_snapshot(connection)
             row = self._bound_record(decision, snapshot)
             if decision.get('previous_snapshot_hash') != snapshot['snapshot_hash']:
@@ -915,6 +1127,8 @@ class KnowledgeBase:
                 if not isinstance(scopes, list) or not scopes or not set(scopes) <= set(PURPOSES):
                     raise ValueError('INVALID_EXCLUSION_SCOPE')
             event = {**deepcopy(decision), 'decision_audit_id': 'TD:' + _hash(decision)[:24],
+                     'dependency_fingerprint': snapshot['dependency_fingerprint'],
+                     'dependency_context': snapshot['dependency_context'],
                      'event_id': row['event_id'], 'official_score': row['official_score'],
                      'candidate_score': row['candidate_score'], 'previous_effective_score': row['effective_score'],
                      'reviewer_role': 'DEMO_TEACHER', 'review_policy_version': RULES_VERSION,

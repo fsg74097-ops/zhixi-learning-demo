@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 import sys
 import time
-from project_paths import data_root, assert_allowed_data_root
+from project_paths import data_root
 
 ROOT = Path(__file__).resolve().parents[1]
 # Keep help/import available when machine configuration needs repair.
@@ -20,7 +20,6 @@ except ValueError:
 
 
 def build_bundle(data_root, node_id=None, as_of=None):
-    assert_allowed_data_root(data_root)
     from official_data import load_dataset
     from resource_index import build_resource_index
     from diagnosis import build_analysis
