@@ -140,3 +140,9 @@
   .snapshot-card { justify-self: start; }
   .governance-table { max-height: 340px; }
 }
+.graph-edge {cursor:pointer}
+.graph-edge:focus {outline:none}
+.graph-edge:focus-visible .graph-edge-path,.graph-edge:hover .graph-edge-path {stroke:var(--primary);stroke-width:3}
+.graph-selection {display:grid;gap:9px;padding-bottom:14px;border-bottom:1px solid var(--border)}
+.graph-selection p {font-size:12px;color:var(--muted)}
+.graph-selection .evidence-link {justify-self:start}

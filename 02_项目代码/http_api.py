@@ -1,9 +1,11 @@
 """Session-scoped HTTP adapter; all business decisions stay in DemoRuntime."""
 from contextlib import nullcontext
 from dataclasses import dataclass, field
+import logging
 import os
 from pathlib import Path
 import re
+import sqlite3
 from threading import RLock
 from time import time
 from uuid import uuid4
@@ -19,12 +21,14 @@ from complementary_groups import suggest_complementary_groups
 from http_jobs import JobStore
 from http_presenters import (assignment_dto, build_view, clean_dto, governance_view,
                              response_view)
+from http_ui_events import CLIENT_FIELDS, UIEventInput, UIEventJournal
 from workflow import build_bundle, DEFAULT_DATA
 
 ROOT = Path(__file__).resolve().parents[1]
 DEMO_LIMITATION = 'DEMO_ROLE_SWITCH / NOT_PRODUCTION_AUTH'
 WEB_ASSET_MEDIA_TYPES = {'.js':'text/javascript','.mjs':'text/javascript','.css':'text/css',
                          '.svg':'image/svg+xml','.woff2':'font/woff2'}
+LOGGER = logging.getLogger(__name__)
 
 
 class Input(BaseModel):
@@ -162,6 +166,7 @@ class Session:
     lock: RLock = field(default_factory=RLock)
     external_snapshot: str | None = None
     external_refs: set = field(default_factory=set)
+    session_trace: str = field(default_factory=lambda: 'UI-'+uuid4().hex)
 
 
 class ScopedProvider:
@@ -245,6 +250,7 @@ def create_app(bundle=None, storage_root=None, web_dist=None, public_mode=False)
     session_cookie = 'zhixi_demo_session' if public_mode else 'zhixi_formal_session'
     default_directory = 'outputs/http_public_runtime' if public_mode else 'outputs/full_demo_runtime'
     directory = Path(storage_root) if storage_root is not None else ROOT / default_directory
+    ui_events = UIEventJournal(directory)
     loaded=bundle
     dist=Path(web_dist) if web_dist else ROOT/'web/dist'
     application.state.sessions=sessions
@@ -269,6 +275,22 @@ def create_app(bundle=None, storage_root=None, web_dist=None, public_mode=False)
     def teacher(value):
         if value.role!='TEACHER':
             fail('ACCESS_DENIED')
+
+    def log_ui_action(value, event_type, payload, trace_id, snapshot_hash=None):
+        event = {'schema_version':'1.1','event_type':event_type,'trace_id':trace_id,
+                 'snapshot_hash':snapshot_hash or value.runtime.snapshot_hash,
+                 'payload':payload,'client_event_id':'SERVER-'+uuid4().hex}
+        try:
+            ui_events.append(value.session_trace,event)
+        except sqlite3.Error:
+            # Successful actions may already be committed by the business store.
+            LOGGER.exception('UI event persistence failed for %s (%s)',event_type,trace_id)
+
+    def assignment_result(value, event_type, result):
+        response = envelope(result,value)
+        log_ui_action(value,event_type,{'draft_id':result['draft_id'],'revision':result['revision']},
+                      response['trace_id'],response['snapshot_hash'])
+        return response
 
     def requests_model(arguments):
         count = arguments.get('max_model_calls', 0)
@@ -365,8 +387,9 @@ def create_app(bundle=None, storage_root=None, web_dist=None, public_mode=False)
             value=Session(identifier,body.role,body.student_id if body.role=='STUDENT' else None,runtime)
             runtime.provider=ScopedProvider(runtime.provider,value)
             sessions[identifier]=value
+        log_ui_action(value,'ROLE_SWITCHED_DEMO',{'role':value.role},value.session_trace)
         response=JSONResponse(envelope({'role':value.role,'student_id':value.student_id,
-            'production_auth':False,'session_mode':'DEMO_ROLE_SWITCH'},value))
+            'production_auth':False,'session_mode':'DEMO_ROLE_SWITCH','session_trace':value.session_trace},value))
         response.set_cookie(session_cookie,identifier,httponly=True,samesite='lax',max_age=8*3600)
         return response
 
@@ -386,13 +409,32 @@ def create_app(bundle=None, storage_root=None, web_dist=None, public_mode=False)
                                      'description':description})
             return envelope({'app_version':'http-v1','data_origin':'SELF_CREATED' if value.runtime.kb.is_self_created else 'AUTHORIZED_OFFICIAL',
                 'dataset_label':'自建数学演示' if value.runtime.kb.is_self_created else '正式模拟学情资料',
-                'snapshot_hash':state['snapshot_hash'],'model_configured':state['model_configured'],
+                'snapshot_hash':state['snapshot_hash'],'session_trace':value.session_trace,
+                'model_configured':state['model_configured'],
                 'role':value.role,'student_id':value.student_id,'nodes':node_options,
                 'classes':[{'id':identity,'label':identity} for identity in sorted({row['class_id'] for row in students})],
                 'students':students,'registry':state['registry'],'capabilities':{'production_auth':False,
                 'teacher_review':value.role=='TEACHER','model_jobs':True,'server_file_import':False,
                 'skill_contract_status':'VERSIONED_SKILLS' if hasattr(value.runtime,'skill_registry') else 'LEGACY_WORKFLOW'},
                 'warnings':state['limitations']},value)
+        return execute(value,operation,read_only=True)
+
+    @application.get('/api/ui-events')
+    def recent_ui_events(value:Session=Depends(context)):
+        return envelope({'events':ui_events.recent(value.session_trace)},value)
+
+    @application.post('/api/ui-events')
+    def record_ui_event(body:UIEventInput,value:Session=Depends(context)):
+        if body.trace_id != value.session_trace or body.event_type not in CLIENT_FIELDS:
+            fail('ACCESS_DENIED')
+        if body.client_event_id.startswith('SERVER-') or not body.has_valid_payload():
+            fail('SCHEMA_INVALID',422)
+        def operation():
+            if body.snapshot_hash != value.runtime.snapshot_hash:
+                fail('STALE_SNAPSHOT')
+            if not ui_events.append(value.session_trace,body.model_dump()):
+                fail('IDEMPOTENCY_CONFLICT')
+            return envelope({'client_event_id':body.client_event_id},value)
         return execute(value,operation,read_only=True)
 
     @application.get('/api/views/{view}')
@@ -504,8 +546,15 @@ def create_app(bundle=None, storage_root=None, web_dist=None, public_mode=False)
         asynchronous = tool_id == 'analyze_responses' and requests_model(body.arguments)
         if asynchronous:
             teacher(value)
-        return command(value,lambda:business(value,value.runtime.call_tool(tool_id,body.arguments,value.role,student)),
-                       asynchronous)
+        def operation():
+            result = value.runtime.call_tool(tool_id,body.arguments,value.role,student)
+            response = business(value,result)
+            if result['ok'] and tool_id == 'create_assignment_draft':
+                draft = result['data']
+                log_ui_action(value,'ASSIGNMENT_DRAFT_REQUESTED',{'draft_id':draft['draft_id'],
+                    'revision':draft['revision']},response['trace_id'],response['snapshot_hash'])
+            return response
+        return command(value,operation,asynchronous)
 
     @application.post('/api/skills/{skill_id}')
     def skill(skill_id:str,body:SkillInput,value:Session=Depends(context)):
@@ -546,8 +595,16 @@ def create_app(bundle=None, storage_root=None, web_dist=None, public_mode=False)
             teacher(value)
         if value.role=='STUDENT' and any(identifier in body.goal for identifier in value.runtime.bundle['dataset']['students'] if identifier!=student):
             fail('ACCESS_DENIED')
-        return command(value,lambda:business(value,value.runtime.run_request(
-            body.goal,value.role,student,body.use_model,node_id=body.node_id),agent=True),body.use_model)
+        def operation():
+            result = value.runtime.run_request(body.goal,value.role,student,body.use_model,node_id=body.node_id)
+            response = business(value,result,agent=True)
+            for step in result['steps']:
+                if step['tool_id'] == 'create_assignment_draft' and step['response']['ok']:
+                    draft = step['response']['data']
+                    log_ui_action(value,'ASSIGNMENT_DRAFT_REQUESTED',{'draft_id':draft['draft_id'],
+                        'revision':draft['revision']},response['trace_id'],response['snapshot_hash'])
+            return response
+        return command(value,operation,body.use_model)
 
     @application.post('/api/external-authorization')
     def authorize(body:AuthorizationInput,value:Session=Depends(context)):
@@ -622,7 +679,7 @@ def create_app(bundle=None, storage_root=None, web_dist=None, public_mode=False)
                 'group_candidate':candidate,
                 'guidance':'围绕本次可比作答互相解释具体步骤，由教师核对对象与练习。',
             })
-            return envelope(draft,value)
+            return assignment_result(value,'ASSIGNMENT_DRAFT_REQUESTED',draft)
         return execute(value,operation)
 
     @application.post('/api/assignments')
@@ -633,7 +690,7 @@ def create_app(bundle=None, storage_root=None, web_dist=None, public_mode=False)
                 fail('GROUP_CANDIDATE_REQUIRED')
             if body.request.get('snapshot_hash',value.runtime.snapshot_hash)!=value.runtime.snapshot_hash:
                 fail('STALE_SNAPSHOT')
-            return envelope(value.runtime.create_draft(body.request),value)
+            return assignment_result(value,'ASSIGNMENT_DRAFT_REQUESTED',value.runtime.create_draft(body.request))
         return execute(value,operation)
 
     @application.get('/api/assignments/{draft_id}')
@@ -643,25 +700,36 @@ def create_app(bundle=None, storage_root=None, web_dist=None, public_mode=False)
     @application.post('/api/assignments/{draft_id}/revisions')
     def edit_assignment(draft_id:str,body:EditInput,value:Session=Depends(context)):
         teacher(value)
-        return execute(value,lambda:envelope(value.runtime.edit_draft(draft_id,body.revision,body.changes),value))
+        return execute(value,lambda:assignment_result(value,'ASSIGNMENT_ITEM_EDITED',
+            value.runtime.edit_draft(draft_id,body.revision,body.changes)))
 
     @application.post('/api/assignments/{draft_id}/validate')
     def validate_assignment(draft_id:str,body:RevisionInput,value:Session=Depends(context)):
         teacher(value)
-        return execute(value,lambda:envelope(value.runtime.validate_draft(draft_id,body.revision),value))
+        def operation():
+            result = value.runtime.validate_draft(draft_id,body.revision)
+            response = envelope(result,value)
+            log_ui_action(value,'ASSIGNMENT_REVALIDATE_REQUESTED',{'draft_id':draft_id,'revision':body.revision},
+                          response['trace_id'],response['snapshot_hash'])
+            return response
+        return execute(value,operation)
 
     @application.post('/api/assignments/{draft_id}/confirm')
     def confirm_assignment(draft_id:str,body:ConfirmInput,value:Session=Depends(context)):
         teacher(value)
-        return execute(value,lambda:envelope(value.runtime.confirm_draft(draft_id,body.revision,body.teacher_id,body.idempotency_key),value))
+        return execute(value,lambda:assignment_result(value,'ASSIGNMENT_TEACHER_CONFIRMED',
+            value.runtime.confirm_draft(draft_id,body.revision,body.teacher_id,body.idempotency_key)))
 
     @application.post('/api/assignments/{draft_id}/export')
     def export_assignment(draft_id:str,body:RevisionInput,value:Session=Depends(context)):
         teacher(value)
         def operation():
             artifact=value.runtime.export_draft(draft_id,body.revision)
+            trace_id = 'HTTP-'+uuid4().hex[:16]
+            log_ui_action(value,'ASSIGNMENT_EXPORT_REQUESTED',
+                {'draft_id':draft_id,'revision':body.revision,'artifact_ref':artifact['filename']},trace_id)
             return Response(artifact['content'],media_type='application/zip',
-                headers={'Content-Disposition':f'attachment; filename="{artifact["filename"]}"'})
+                headers={'Content-Disposition':f'attachment; filename="{artifact["filename"]}"','X-Trace-Id':trace_id})
         return execute(value,operation)
 
     @application.post('/api/assignments/{draft_id}/answers')

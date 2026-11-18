@@ -37,6 +37,20 @@ def joint_assessment_edges(question_links):
     return list(edges.values())
 
 
+def recommended_practice_edges(approved_practices):
+    edges = defaultdict(list)
+    for practice in approved_practices.values():
+        for pair in combinations(sorted(set(practice['knowledge_refs'])), 2):
+            edges[pair].append(practice['practice_id'])
+    return [
+        {'from_id':start,'to_id':end,'relation_type':'RECOMMENDED',
+         'mapping_method':'SHARED_APPROVED_PRACTICE','mapping_version':MAPPING_VERSION,
+         'review_status':'DERIVED_FROM_APPROVED_PRACTICE','question_ids':sorted(refs),
+         'evidence_refs':sorted(refs)}
+        for (start,end),refs in sorted(edges.items())
+    ]
+
+
 def step_links(steps, points, rubric_node_links):
     by_rubric, by_step, node_pairs = defaultdict(list), defaultdict(list), {}
     for link in rubric_node_links:

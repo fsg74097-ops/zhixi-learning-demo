@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ArrowRight, BookOpen, Fingerprint, Sparkles } from 'lucide-react';
-import { api, ApiError } from './api.ts';
+import { api, ApiError, emitUiEvent } from './api.ts';
 import { EvidenceDrawer } from './components/EvidenceDrawer.tsx';
 import { Shell } from './components/Shell.tsx';
 import { Badge, Button, Dialog, ErrorNotice, Loading } from './components/ui.tsx';
@@ -110,6 +110,10 @@ export function App() {
   const [evidence, setEvidence] = useState<string | null>(null);
   const [toast, setToast] = useState('');
   const [refreshing, setRefreshing] = useState(false);
+  const lastView = useRef<string | undefined>(undefined);
+  const teacher = context?.role === 'TEACHER';
+  const pages = teacher ? teacherPages : studentPages;
+  const page = route.page && Object.hasOwn(pages, route.page) ? route.page : teacher ? 'dashboard' : 'learning';
 
   function navigate(target: string, role = context?.role ?? 'TEACHER') {
     const hash = `#/${role === 'TEACHER' ? 'teacher' : 'student'}/${target}`;
@@ -142,6 +146,11 @@ export function App() {
     }
   }
   useEffect(() => { void load(); }, []);
+  useEffect(() => {
+    if (!context) return;
+    if (lastView.current && lastView.current !== page) emitUiEvent(context, 'VIEW_CHANGED', {view_id: page});
+    lastView.current = page;
+  }, [context, page]);
   useEffect(() => {
     const changed = () => {
       setRoute(readRoute());
@@ -182,15 +191,28 @@ export function App() {
     }
   }
   function changeScope(next: Scope) {
-    if (!context) return;
-    setScope(scopeFor(context, next));
-    if (route.entity || route.student) navigate(page);
+    if (!context || !scope) return;
+    const normalized = scopeFor(context, next);
+    if (normalized.node_id !== selectedScope.node_id) {
+      emitUiEvent(context, 'TIME_RANGE_CHANGED', {node_id: normalized.node_id});
+    } else if (normalized.class_id !== selectedScope.class_id) {
+      emitUiEvent(context, 'FILTER_CHANGED', normalized.class_id ? {class_id: normalized.class_id} : {filter_id: 'all_classes'});
+    } else if (normalized.student_id !== selectedScope.student_id) {
+      emitUiEvent(context, 'FILTER_CHANGED', {student_id: normalized.student_id});
+    }
+    setScope(normalized);
+    if (route.entity || route.student || route.node) navigate(page);
+  }
+  function recordEvidence(id: string) {
+    if (context) emitUiEvent(context, 'EVIDENCE_OPENED', {entity_id: id});
+  }
+  function openEvidence(id: string) {
+    if (!id) return;
+    recordEvidence(id);
+    setEvidence(id);
   }
 
   if (!context || !scope) return <main className="startup stack"><Badge tone="info">智析学伴</Badge><h1>正在打开学习工作空间</h1>{error ? <ErrorNotice error={error} onRetry={() => void load('TEACHER')}/> : <Loading/>}</main>;
-  const teacher = context.role === 'TEACHER';
-  const pages = teacher ? teacherPages : studentPages;
-  const page = route.page && Object.hasOwn(pages, route.page) ? route.page : teacher ? 'dashboard' : 'learning';
   const selectedScope = teacher && (route.student || route.node) ? scopeFor(context, {...scope,node_id:route.node || scope.node_id}, route.student) : scope;
   const focused = ['profile','diagnosis','assignments','agent'].includes(page);
   const apiScope = {
@@ -201,9 +223,9 @@ export function App() {
     <Shell context={context} scope={selectedScope} page={page} onScope={changeScope} onRole={changeRole} onNavigate={navigate} onRefresh={() => void refresh()}>
       {error != null && <div className="page-global-error"><ErrorNotice error={error} onRetry={() => void refresh()}/></div>}
       {switching ? <div className="page"><Loading/></div> :
-        <Workspace key={`${context.role}:${context.snapshot_hash}:${page}:${JSON.stringify(apiScope)}`} page={page} entity={route.entity} apiScope={apiScope} context={context} scope={selectedScope} revision={revision} onEvidence={setEvidence} onNavigate={navigate} onRefresh={() => void refresh()} notify={setToast}/>}
+        <Workspace key={`${context.role}:${context.snapshot_hash}:${page}:${JSON.stringify(apiScope)}`} page={page} entity={route.entity} apiScope={apiScope} context={context} scope={selectedScope} revision={revision} onEvidence={openEvidence} onNavigate={navigate} onRefresh={() => void refresh()} notify={setToast}/>}
     </Shell>
-    <EvidenceDrawer key={evidence ?? 'closed'} id={evidence} onClose={() => setEvidence(null)}/>
+    <EvidenceDrawer key={evidence ?? 'closed'} id={evidence} onClose={() => setEvidence(null)} onFollow={recordEvidence}/>
     <Dialog title="选择学生演示视角" open={selectStudent} onClose={() => !switching && setSelectStudent(false)} description="进入后，页面仅使用这位学生对应的作答、练习和反馈。">
       <div className="stack modal-form">
         <label className="field">演示学生<select value={student} onChange={event => setStudent(event.target.value)}>{context.students.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>

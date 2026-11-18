@@ -1,5 +1,16 @@
+import type { Context } from './models.ts';
+
 export interface Envelope<T> { ok: boolean; data: T; error?: {code: string; message: string; retryable?: boolean}; trace_id?: string; snapshot_hash?: string; limitations?: string[] }
 type Transport = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+type UiEventPayloads = {
+  NODE_SELECTED: {node_id: string; selected: boolean};
+  EDGE_SELECTED: {source: string; target: string; relation_type?: string};
+  EVIDENCE_OPENED: {entity_id: string};
+  FILTER_CHANGED: {class_id?: string; student_id?: string; filter_id?: string};
+  TIME_RANGE_CHANGED: {node_id: string; comparison_node_id?: string};
+  VIEW_CHANGED: {view_id: string};
+};
+type UiEventContext = Pick<Context, 'session_trace' | 'snapshot_hash'>;
 export class ApiError extends Error {
   code: string; traceId?: string; retryable: boolean;
   constructor(code: string, message: string, traceId?: string, retryable = false) { super(message); this.name = 'ApiError'; this.code = code; this.traceId = traceId; this.retryable = retryable; }
@@ -25,6 +36,16 @@ export class ApiClient {
   async request<T>(path: string, init: RequestInit = {}): Promise<T> { return (await this.requestEnvelope<T>(path, init)).data; }
   get<T>(path: string, signal?: AbortSignal) { return this.request<T>(path, {signal}); }
   post<T>(path: string, body: unknown, signal?: AbortSignal) { return this.request<T>(path, {method:'POST',body:JSON.stringify(body),signal}); }
+  uiEvent<K extends keyof UiEventPayloads>(context: UiEventContext, eventType: K, payload: UiEventPayloads[K]) {
+    return this.post('/ui-events', {
+      schema_version: '1.1',
+      event_type: eventType,
+      trace_id: context.session_trace,
+      snapshot_hash: context.snapshot_hash,
+      payload,
+      client_event_id: crypto.randomUUID(),
+    });
+  }
   async run<T>(path: string, body: unknown, options: {signal?: AbortSignal; pollMs?: number; onProgress?: (state: JobState) => void} = {}): Promise<T> {
     let result = await this.post<T | JobState>(path, body, options.signal);
     if (!result || typeof result !== 'object' || !('job_id' in result)) return result as T;
@@ -49,6 +70,11 @@ export class ApiClient {
   }
 }
 export const api = new ApiClient();
+
+export function emitUiEvent<K extends keyof UiEventPayloads>(context: UiEventContext, eventType: K, payload: UiEventPayloads[K]) {
+  if (!context.session_trace) return;
+  void api.uiEvent(context, eventType, payload).catch(() => console.warn('页面事件记录未完成', eventType));
+}
 
 export function viewPath(view: string, scope: object) {
   const query = new URLSearchParams(Object.entries(scope).filter((entry): entry is [string,string] => typeof entry[1] === 'string' && entry[1] !== ''));

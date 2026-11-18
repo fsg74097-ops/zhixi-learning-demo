@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { ArrowRight, ChartColumn, Users } from 'lucide-react';
-import { ApiError } from '../api.ts';
+import { ApiError, emitUiEvent } from '../api.ts';
 import { useCommand } from '../hooks.ts';
 import { entries, object, text } from '../models.ts';
 import type { Metric } from '../models.ts';
@@ -60,7 +60,11 @@ export function Classroom({data,context,scope,onEvidence,onNavigate}:FeatureProp
         {typeof result.paired_n==='number' && <p className="muted">本次对照纳入 {result.paired_n} 道共同题目。</p>}
       </div>}
       {tab==='assessment' && <div className="stack">
-        <label className="field">与当前测验对照<select aria-label="对照测验" disabled={across.busy} value={otherAssessment} onChange={event=>setOtherAssessment(event.target.value)}>
+        <label className="field">与当前测验对照<select aria-label="对照测验" disabled={across.busy} value={otherAssessment} onChange={event=>{
+          const selection = event.target.value;
+          setOtherAssessment(selection);
+          emitUiEvent(context, 'TIME_RANGE_CHANGED', {node_id: scope.node_id, comparison_node_id: selection || undefined});
+        }}>
           <option value="">选择不同测验</option>
           {context.nodes.filter(node=>node.id!==scope.node_id).map(node=><option key={node.id} value={node.id}>{node.label}</option>)}
         </select><span className="field-hint">只纳入在两次测验中属于同一学生、同一题目且使用相同评分依据的作答。</span></label>

@@ -5,6 +5,7 @@ from pathlib import Path
 
 from jsonschema import Draft202012Validator
 from diagnosis import HINTS
+from knowledge_relations import recommended_practice_edges
 
 
 PATH_FIELDS = {'path','source_path','file_path','absolute_path','image_path','artifact_path',
@@ -231,6 +232,7 @@ def build_view(runtime,view,audience,student_id=None,node_id=None,class_id=None,
                        for identity,node in runtime.kb.nodes.items()]
         course_relationships = getattr(runtime.kb, 'course_relationships', None)
         edges = course_relationships()['node_edges'] if callable(course_relationships) else []
+        edges.extend(recommended_practice_edges(runtime.kb.practice_items))
         base['edges'] = [{**edge, 'source':edge['from_id'], 'target':edge['to_id']}
                          for edge in edges if edge['review_status'] not in {'REJECTED','DISPUTED'}]
         if not base['edges']:

@@ -21,13 +21,21 @@ distinct. Stats preserve numerator, denominator, n, coverage and exclusions.
 
 - `GET /api/health`: runtime health only, no credentials.
 - `GET /api/context`: `{app_version, data_origin, dataset_label, snapshot_hash,
-  model_configured, role, student_id, nodes:[{id,label}], classes:[{id,label}],
+  session_trace, model_configured, role, student_id, nodes:[{id,label}], classes:[{id,label}],
   students:[{id,label,class_id}], registry:{tools,skills}, capabilities, warnings}`.
 - `GET /api/views/{view}?node_id=...&student_id=...&class_id=...`: real, readable
   view models for `dashboard`, `classes`, `profile`, `diagnosis`, `knowledge`,
   `assignments`, `agent`, `governance`, `learning`, `practice`.
   Exact view payloads are documented by the backend owner in this file before
   frontend binding. Always keep normal findings and evidence references apart.
+- `POST /api/ui-events` records browser interactions using
+  `schemas/ui_event.schema.json` and the current session trace and snapshot.
+  It accepts navigation, filters, assessment selection, evidence opening and
+  graph selection. Retries with the same client event ID are idempotent.
+  Role switches and assignment commands are recorded server-side after the
+  existing session and revision checks. Assignment event traces reference the
+  command response. `GET /api/ui-events` returns the current session's latest
+  100 events in order. This journal carries identifiers and action metadata.
 - `GET /api/evidence/{entity_id}`: exact source item subject to session scope.
 - `GET /api/responses/{record_id}`: source response, rubric, supported math
   result, evidence references and current effective/official/candidate status.

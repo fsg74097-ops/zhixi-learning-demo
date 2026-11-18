@@ -1,6 +1,6 @@
 export type Role = 'TEACHER' | 'STUDENT';
 export interface Choice {id:string; label:string; class_id?:string}
-export interface Context {app_version:string; data_origin:string; dataset_label:string; snapshot_hash:string; model_configured:boolean; role:Role; student_id?:string; nodes:Choice[]; classes:Choice[]; students:Choice[]; registry?:{tools:unknown[];skills:unknown[]}; capabilities:Record<string,unknown>; warnings:unknown[]}
+export interface Context {app_version:string; data_origin:string; dataset_label:string; snapshot_hash:string; session_trace:string; model_configured:boolean; role:Role; student_id?:string; nodes:Choice[]; classes:Choice[]; students:Choice[]; registry?:{tools:unknown[];skills:unknown[]}; capabilities:Record<string,unknown>; warnings:unknown[]}
 export interface Scope {node_id:string; student_id:string; class_id:string}
 export interface Metric {id?:string;label?:string;value?:unknown;n?:number;numerator?:number|null;denominator?:number|null;coverage?:number;rate?:number|null;denominator_definition?:string;excluded_count?:number;observation_scope?:string;evidence_refs?:string[]}
 export interface Finding {id:string;title:string;description:string;kind?:string;verification?:string;evidence_refs:string[]}

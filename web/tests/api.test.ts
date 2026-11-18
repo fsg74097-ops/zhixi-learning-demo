@@ -40,3 +40,27 @@ test('aborting a pending analysis stops polling and does not submit a second mod
   await assert.rejects(client.run('/agent', {goal:'分析',use_model:true}, {signal:controller.signal,pollMs:0}), { name: 'AbortError' });
   assert.equal(count, 1);
 });
+
+test('UI events carry the server-issued trace and snapshot without copying session fields', async () => {
+  const requests: Array<{url: string; init?: RequestInit}> = [];
+  const client = new ApiClient(async (input, init) => {
+    requests.push({url: String(input), init});
+    return Response.json({ok: true, data: {accepted: true}});
+  });
+  const context = {session_trace: 'UI-TRACE', snapshot_hash: 'snapshot-1', role: 'TEACHER'};
+  await client.uiEvent(context, 'NODE_SELECTED', {node_id: 'T03I1', selected: true});
+  await client.uiEvent(context, 'EDGE_SELECTED', {source: 'T03I1', target: 'T03I2'});
+  const events = requests.map(request => JSON.parse(String(request.init?.body)));
+  assert.ok(events[0].client_event_id);
+  assert.notEqual(events[0].client_event_id, events[1].client_event_id);
+  assert.equal(requests[0].url, '/api/ui-events');
+  assert.equal(requests[0].init?.credentials, 'same-origin');
+  assert.deepEqual({...events[0], client_event_id: undefined}, {
+    schema_version: '1.1',
+    event_type: 'NODE_SELECTED',
+    trace_id: 'UI-TRACE',
+    snapshot_hash: 'snapshot-1',
+    payload: {node_id: 'T03I1', selected: true},
+    client_event_id: undefined,
+  });
+});
