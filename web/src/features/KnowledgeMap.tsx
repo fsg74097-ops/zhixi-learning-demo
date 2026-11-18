@@ -80,7 +80,7 @@ export function KnowledgeMap({data, context, scope, onEvidence, onNavigate, noti
     setPositions(current => ({...current, [id]: position}));
   }
 
-  function coordinate(event: PointerEvent<SVGGElement>): GraphPoint {
+  function coordinate(event: PointerEvent<SVGElement>): GraphPoint {
     const point = new DOMPoint(event.clientX, event.clientY);
     const position = point.matrixTransform(svg.current?.getScreenCTM()?.inverse());
     return {x: position.x, y: position.y};
@@ -88,24 +88,25 @@ export function KnowledgeMap({data, context, scope, onEvidence, onNavigate, noti
 
   function startDrag(event: PointerEvent<SVGGElement>, id: string, position: GraphPoint) {
     if (event.button !== 0) return;
-    event.currentTarget.setPointerCapture(event.pointerId);
+    svg.current?.setPointerCapture(event.pointerId);
     drag.current = {id, start: coordinate(event), position, moved: false};
   }
 
-  function moveDrag(event: PointerEvent<SVGGElement>, id: string) {
+  function moveDrag(event: PointerEvent<SVGSVGElement>) {
     const activeDrag = drag.current;
-    if (!activeDrag || activeDrag.id !== id) return;
+    if (!activeDrag) return;
     const now = coordinate(event);
     const dx = now.x - activeDrag.start.x;
     const dy = now.y - activeDrag.start.y;
     if (Math.abs(dx) + Math.abs(dy) > 4) activeDrag.moved = true;
-    if (activeDrag.moved) moveNode(id, activeDrag.position.x + dx, activeDrag.position.y + dy);
+    if (activeDrag.moved) moveNode(activeDrag.id, activeDrag.position.x + dx, activeDrag.position.y + dy);
   }
 
-  function finishDrag(event: PointerEvent<SVGGElement>, id: string) {
+  function finishDrag(event: PointerEvent<SVGSVGElement>) {
     const activeDrag = drag.current;
     drag.current = null;
-    if (!activeDrag || activeDrag.id !== id) return;
+    if (!activeDrag) return;
+    const {id} = activeDrag;
     if (!activeDrag.moved) {
       toggle(id);
       return;
@@ -187,7 +188,8 @@ export function KnowledgeMap({data, context, scope, onEvidence, onNavigate, noti
             <Badge><MousePointer2 size={11}/>拖动探索 · 最多选择两点</Badge>
             <Button variant="icon small" aria-label="重置节点位置" onClick={() => setPositions(initialPositions(nodes))}><RotateCcw size={13}/></Button>
           </div>
-          <svg ref={svg} viewBox={'0 0 760 ' + height} aria-label="当前观察知识图谱">
+          <svg ref={svg} viewBox={'0 0 760 ' + height} aria-label="当前观察知识图谱"
+            onPointerMove={moveDrag} onPointerUp={finishDrag} onPointerCancel={() => { drag.current = null; }}>
             <g>{edges.map((edge, index) => {
               const source = positions[edge.source];
               const target = positions[edge.target];
@@ -219,9 +221,6 @@ export function KnowledgeMap({data, context, scope, onEvidence, onNavigate, noti
                 tabIndex={0} role="button" aria-pressed={picked}
                 aria-label={node.label + '，' + (node.n ? node.n + '次观察' : '未观察') + '，' + (picked ? '已选择' : '未选择')}
                 onPointerDown={event => startDrag(event, node.id, point)}
-                onPointerMove={event => moveDrag(event, node.id)}
-                onPointerUp={event => finishDrag(event, node.id)}
-                onPointerCancel={() => { drag.current = null; }}
                 onKeyDown={event => handleNodeKey(event, node.id, point)}>
                 <circle r={radius + 9} fill={picked ? '#e7efff' : '#ffffffaa'} stroke={picked ? 'var(--primary)' : '#dbe3ed'} strokeWidth={picked ? 2 : 1}/>
                 <circle r={radius + 4} fill="none" stroke={color} opacity=".55" strokeWidth="2"
