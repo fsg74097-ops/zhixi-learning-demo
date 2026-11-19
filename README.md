@@ -2,7 +2,7 @@
 
 教师工作台、班级分析、学生端、知识星图、任务单和可审计的 Agent 使用独立自建数据。
 
-[进入重做版演示](https://fat-want-rpg-blocks.trycloudflare.com)。暂时通过开发电脑上的隧道提供服务，电脑或连接停止时可使用下面的本地启动方式。
+[进入重做版演示](https://zhixi-learning-demo-production.up.railway.app/)。Railway 公网演示使用自建数据。
 
 在仓库目录使用 Python 3.11 和 Node.js 24：
 
